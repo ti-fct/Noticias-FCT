@@ -5,7 +5,8 @@ from kivy.properties import StringProperty, ListProperty
 from kivy.clock import Clock
 from kivy.lang import Builder
 from kivy.config import Config
-from kivy.uix.image import AsyncImage  # Necessário para AsyncImage
+from kivy.uix.image import AsyncImage
+from kivy.animation import Animation
 
 import feedparser
 from bs4 import BeautifulSoup
@@ -15,6 +16,7 @@ from datetime import datetime
 from urllib.parse import urljoin
 import qrcode
 import os
+from email.utils import parsedate_to_datetime
 
 # Configuração inicial para tela cheia
 Config.set('graphics', 'fullscreen', 'auto')
@@ -26,13 +28,9 @@ try:
 except locale.Error as e:
     logging.warning("Locale pt_BR.UTF-8 não está disponível, usando configuração padrão.")
 
-# Definição do RootWidget (necessário para o arquivo KV)
 class RootWidget(BoxLayout):
     pass
 
-# -----------------------------------------------------------
-# Classe para cada item de notícia no carrossel
-# -----------------------------------------------------------
 class NewsItem(BoxLayout):
     title = StringProperty('')
     content = StringProperty('')
@@ -45,13 +43,9 @@ class NewsItem(BoxLayout):
         Clock.schedule_once(self._finalizar_inicializacao)
 
     def _finalizar_inicializacao(self, dt):
-        """Carrega imagem padrão se necessário"""
         if not self.image_source:
             self.image_source = 'assets/placeholder.png'
 
-# -----------------------------------------------------------
-# Classe principal do carrossel de notícias
-# -----------------------------------------------------------
 class NewsCarousel(Carousel):
     news_items = ListProperty([])
     BASE_URL = 'https://fct.ufg.br'
@@ -60,12 +54,13 @@ class NewsCarousel(Carousel):
         super().__init__(**kwargs)
         self.direction = 'right'
         self.loop = True
+        self.anim_type = 'in_out_expo'  # Tipo de animação mais suave
+        self.anim_move_duration = 0.7   # Duração da animação
+        self.min_move = 0.05            # Movimento mínimo para transição
         self.qr_dir = 'qrcodes'
         
-        # Garante a criação do diretório para QR codes
         os.makedirs(self.qr_dir, exist_ok=True)
         
-        # Agenda atualizações automáticas
         Clock.schedule_once(self.carregar_noticias)
         Clock.schedule_interval(self.carregar_noticias, 300)
         Clock.schedule_interval(self.passar_slide_automatico, 10)
@@ -73,10 +68,13 @@ class NewsCarousel(Carousel):
     def passar_slide_automatico(self, dt):
         """Passa os slides automaticamente a cada 10 segundos"""
         if self.slides:
-            self.load_next(mode='next')
+            # Força o retorno ao primeiro slide quando estiver no último
+            if self.index == len(self.slides) - 1:
+                self.index = 0
+            else:
+                self.load_next()
 
     def gerar_qr_code(self, url, news_id):
-        """Gera e salva QR code para a URL da notícia"""
         try:
             qr = qrcode.QRCode(
                 version=1,
@@ -95,19 +93,18 @@ class NewsCarousel(Carousel):
             return ''
 
     def formatar_data(self, data_str):
-        """Formata a data para o padrão brasileiro"""
+        """Formata a data para o padrão DD/MM/AAAA usando parsedate_to_datetime"""
         try:
-            data = datetime.strptime(data_str, '%a, %d %b %Y %H:%M:%S %z')
-            return data.strftime('%d de %B de %Y às %H:%M')
+            # Usa parsedate_to_datetime para converter a data do formato RFC 2822
+            data = parsedate_to_datetime(data_str)
+            return data.strftime('%d/%m/%Y')
         except Exception as e:
-            logging.error(f"Erro na formatação: {e}")
+            logging.error(f"Erro na formatação da data: {e}")
             return data_str
 
     def corrigir_url_imagem(self, url):
-        """Garante URLs absolutas para as imagens e corrige URL malformadas"""
         if not url:
             return 'assets/placeholder.png'
-        # Se a URL estiver malformada, removendo o prefixo redundante
         if url.startswith("http://fct.ufg.brhttps://"):
             url = url.replace("http://fct.ufg.br", "")
         if not url.startswith(('http://', 'https://')):
@@ -115,29 +112,26 @@ class NewsCarousel(Carousel):
         return url
 
     def extrair_conteudo_principal(self, html):
-        """Processa o HTML para extrair texto e imagem principal"""
         soup = BeautifulSoup(html, 'html.parser')
         img_tag = soup.find('img')
         img_url = self.corrigir_url_imagem(img_tag['src']) if img_tag else None
         
-        # Aumentar para 5 parágrafos e 1000 caracteres
         texto_principal = [
             p.get_text().strip() for p in soup.find_all('p') 
             if p.get_text().strip() and not any(m in p.get_text().lower() for m in ['texto:', 'foto:'])
         ]
         
-        conteudo = ' '.join(texto_principal[:5])  # Alterado de 3 para 5 parágrafos
-        if len(conteudo) > 1000:  # Aumentado de 600 para 1000 caracteres
+        conteudo = ' '.join(texto_principal[:5])
+        if len(conteudo) > 1000:
             conteudo = conteudo[:1000] + '...'
         return conteudo, img_url
 
     def carregar_noticias(self, *args):
-        """Busca e processa as notícias do feed RSS"""
         try:
             feed = feedparser.parse('https://fct.ufg.br/feed')
             noticias_processadas = []
             
-            for idx, entrada in enumerate(feed.entries[:5]):  # Limita a 5 notícias
+            for idx, entrada in enumerate(feed.entries[:5]):
                 conteudo, img_url = self.extrair_conteudo_principal(entrada.get('description', ''))
                 titulo = entrada.title if len(entrada.title) <= 80 else entrada.title[:80] + '...'
                 pub_date = self.formatar_data(entrada.published) if 'published' in entrada else ''
@@ -156,26 +150,19 @@ class NewsCarousel(Carousel):
             logging.error(f"Erro ao carregar notícias: {e}")
 
     def _criar_slides(self):
-        """Atualiza os slides do carrossel"""
         self.clear_widgets()
         for item in self.news_items:
             self.add_widget(NewsItem(**item))
 
-# -----------------------------------------------------------
-# Classe principal da aplicação
-# -----------------------------------------------------------
 class NewsPanel(App):
     clock_text = StringProperty('')
     
     def build(self):
-        """Inicializa a aplicação"""
         self.title = 'Painel FCT/UFG'
         Clock.schedule_interval(self.atualizar_relogio, 1)
-        # Certifique-se de que o arquivo KV esteja nomeado corretamente (painel.kv)
         return Builder.load_file('painel.kv')
     
     def atualizar_relogio(self, dt):
-        """Atualiza o relógio digital"""
         self.clock_text = datetime.now().strftime("%H:%M:%S")
 
 if __name__ == '__main__':
