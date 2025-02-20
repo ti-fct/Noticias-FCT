@@ -1,12 +1,13 @@
 from kivy.app import App
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.carousel import Carousel
-from kivy.properties import StringProperty, ListProperty
+from kivy.properties import StringProperty, ListProperty, BooleanProperty
 from kivy.clock import Clock
 from kivy.lang import Builder
 from kivy.config import Config
 from kivy.uix.image import AsyncImage
 from kivy.animation import Animation
+from kivy.core.window import Window
 
 import feedparser
 from bs4 import BeautifulSoup
@@ -20,6 +21,8 @@ from email.utils import parsedate_to_datetime
 
 # Configuração inicial para tela cheia
 Config.set('graphics', 'fullscreen', 'auto')
+Config.set('graphics', 'borderless', '1')  # Remove a borda da janela
+Config.write()  # Salva as configurações
 
 # Configurações gerais
 logging.basicConfig(level=logging.INFO)
@@ -49,30 +52,73 @@ class NewsItem(BoxLayout):
 class NewsCarousel(Carousel):
     news_items = ListProperty([])
     BASE_URL = 'https://fct.ufg.br'
+    auto_advance = BooleanProperty(True)
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.direction = 'right'
         self.loop = True
-        self.anim_type = 'in_out_expo'  # Tipo de animação mais suave
-        self.anim_move_duration = 0.7   # Duração da animação
-        self.min_move = 0.05            # Movimento mínimo para transição
+        self.anim_type = 'in_out_expo'
+        self.anim_move_duration = 0.7
+        self.min_move = 0.05
         self.qr_dir = 'qrcodes'
         
         os.makedirs(self.qr_dir, exist_ok=True)
         
+        # Inicializa o carregamento de notícias
         Clock.schedule_once(self.carregar_noticias)
         Clock.schedule_interval(self.carregar_noticias, 300)
-        Clock.schedule_interval(self.passar_slide_automatico, 10)
+        
+        # Agenda o primeiro slide automático com um pequeno atraso
+        Clock.schedule_once(lambda dt: self.iniciar_slides_automaticos(), 2)
+        
+        # Vincula eventos de tela cheia
+        Window.bind(on_resize=self._on_window_resize)
+        Window.bind(on_maximize=self._on_window_maximize)
+
+    def _on_window_resize(self, instance, width, height):
+        """Manipula eventos de redimensionamento da janela"""
+        Clock.unschedule(self.passar_slide_automatico)
+        Clock.schedule_once(lambda dt: self.iniciar_slides_automaticos(), 1)
+
+    def _on_window_maximize(self, instance):
+        """Manipula eventos de maximização da janela"""
+        Clock.unschedule(self.passar_slide_automatico)
+        Clock.schedule_once(lambda dt: self.iniciar_slides_automaticos(), 1)
+
+    def iniciar_slides_automaticos(self):
+        """Inicia ou reinicia a apresentação automática de slides"""
+        if self.auto_advance:
+            Clock.unschedule(self.passar_slide_automatico)
+            Clock.schedule_interval(self.passar_slide_automatico, 10)
+            logging.info("Apresentação automática de slides iniciada/reiniciada")
+
+    def pausar_slides_automaticos(self):
+        """Pausa a apresentação automática de slides"""
+        Clock.unschedule(self.passar_slide_automatico)
+        logging.info("Apresentação automática de slides pausada")
 
     def passar_slide_automatico(self, dt):
-        """Passa os slides automaticamente a cada 10 segundos"""
-        if self.slides:
-            # Força o retorno ao primeiro slide quando estiver no último
-            if self.index == len(self.slides) - 1:
-                self.index = 0
-            else:
-                self.load_next()
+        """Passa os slides automaticamente"""
+        if not self.slides or not self.auto_advance:
+            return False
+
+        try:
+            # Garante que o índice seja válido
+            total_slides = len(self.slides)
+            if total_slides <= 1:
+                return False
+
+            # Avança para o próximo slide
+            próximo_índice = (self.index + 1) % total_slides
+            self.index = próximo_índice
+            
+            logging.info(f"Avançando para slide {próximo_índice + 1} de {total_slides}")
+            return True
+            
+        except Exception as e:
+            logging.error(f"Erro ao passar slide: {e}")
+            return False
 
     def gerar_qr_code(self, url, news_id):
         try:
@@ -93,9 +139,7 @@ class NewsCarousel(Carousel):
             return ''
 
     def formatar_data(self, data_str):
-        """Formata a data para o padrão DD/MM/AAAA usando parsedate_to_datetime"""
         try:
-            # Usa parsedate_to_datetime para converter a data do formato RFC 2822
             data = parsedate_to_datetime(data_str)
             return data.strftime('%d/%m/%Y')
         except Exception as e:
@@ -160,6 +204,11 @@ class NewsPanel(App):
     def build(self):
         self.title = 'Painel FCT/UFG'
         Clock.schedule_interval(self.atualizar_relogio, 1)
+        
+        # Configura a janela para tela cheia
+        Window.borderless = True
+        Window.fullscreen = True
+        
         return Builder.load_file('painel.kv')
     
     def atualizar_relogio(self, dt):
