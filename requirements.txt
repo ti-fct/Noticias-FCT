@@ -1,0 +1,6 @@
+# requirements.txt
+kivy>=2.0.0
+beautifulsoup4>=4.9.3
+feedparser>=6.0.8
+qrcode>=7.3.1
+Pillow>=9.0.0
